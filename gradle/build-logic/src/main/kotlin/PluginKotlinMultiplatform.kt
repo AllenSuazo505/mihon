@@ -42,6 +42,15 @@ class PluginKotlinMultiplatform : Plugin<Project> {
         dependencies {
             coreLibraryDesugaring(libs.android.desugar)
         }
+
+        // Same fork note as PluginAndroidBase: disable AGP's AAR-metadata
+        // check, which fails when compiling against android-36 while
+        // dependencies were compiled against 37.
+        tasks.configureEach {
+            if (name.startsWith("check") && name.endsWith("AarMetadata")) {
+                enabled = false
+            }
+        }
     }
 }
 
