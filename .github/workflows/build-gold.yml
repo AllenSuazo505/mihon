@@ -41,7 +41,10 @@ jobs:
           ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           echo "ANDROID_HOME=$ANDROID_HOME"
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "platforms;android-37" "build-tools;36.0.0"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
+          echo "--- installed platforms (diagnostic) ---"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed | grep -i "platform" || true
+          ls "$ANDROID_HOME/platforms" || true
 
       # CI-only: build against upstream's real compileSdk (37.2 = API 37 +
       # extension level 2). The fork's committed catalog says 36 because
