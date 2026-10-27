@@ -129,6 +129,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
                 curlOverlay?.clearCurl()
                 curlSegmentKey = null
                 curlLastScrollX = pager.scrollX
+                curlScrollDirection = null
             }
         }
     }
@@ -145,6 +146,9 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     /** Pager scrollX at the previous scroll callback, for scroll-direction detection. */
     private var curlLastScrollX = 0
 
+    /** Last known scroll direction (true = adapter index increasing), held while still. */
+    private var curlScrollDirection: Boolean? = null
+
     /** Key of the curl segment currently shown, so bitmaps are captured once per turn. */
     private var curlSegmentKey: String? = null
 
@@ -160,10 +164,18 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     /**
-     * Drives the curl overlay from the pager's scroll callbacks. Only forward turns curl:
-     * backward turns, vertical pagers, chapter transitions, and turns with page
-     * transitions disabled fall back to the pager's stock slide. Bitmaps are captured
-     * once per turn segment from the pager holders themselves.
+     * Drives the curl overlay from the pager's scroll callbacks. The curl plays in
+     * both directions and both reading directions — no direction falls back to the
+     * pager's stock slide while the curl is enabled. Bitmaps are captured once per
+     * turn segment from the pager holders themselves.
+     *
+     * Single page: a forward turn peels the outgoing page off the reading-advance
+     * edge (right for LTR, left for R2L); a backward turn peels the returning page
+     * back on from the opposite edge. Spread: a one-page advance moves one page
+     * across the spread, so the overlay migrates that page from its start half to
+     * its destination half over the two neighbouring pages as the base — there is
+     * no page that "stays put", and both rest states are exact, so the overlay
+     * hands off to the pager at turn end with no jump.
      */
     private fun updateCurl(position: Int, positionOffset: Float) {
         val overlay = curlOverlay
@@ -175,6 +187,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             overlay.clearCurl()
             curlSegmentKey = null
             curlLastScrollX = pager.scrollX
+            curlScrollDirection = null
             return
         }
         if (!pager.isHorizontal() || !general.usePageTransitions || !general.pageCurlEnabled ||
@@ -183,13 +196,22 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             overlay.clearCurl()
             curlSegmentKey = null
             curlLastScrollX = pager.scrollX
+            curlScrollDirection = null
             return
         }
 
-        // Scroll direction from scrollX movement: increasing scrollX means the adapter
-        // index is increasing, whatever the reading direction.
-        val increasing = pager.scrollX >= curlLastScrollX
-        curlLastScrollX = pager.scrollX
+        // Scroll direction from scrollX movement, held while the finger is still so
+        // a held drag never flips the segment mid-turn. No movement yet means no
+        // direction yet: wait for the first real movement instead of guessing.
+        val scrollX = pager.scrollX
+        val increasing = when {
+            scrollX > curlLastScrollX -> true
+            scrollX < curlLastScrollX -> false
+            else -> curlScrollDirection
+        }
+        curlLastScrollX = scrollX
+        if (increasing == null) return
+        curlScrollDirection = increasing
 
         // Adapter segment being scrolled, and progress 0..1 along it.
         val (outgoingPos, incomingPos, progress) = if (increasing) {
@@ -201,69 +223,92 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         // Reading forward means the adapter index moves with the reading direction:
         // increasing for left-to-right, decreasing for right-to-left.
         val readingForward = if (isReversed) !increasing else increasing
-        if (!readingForward) {
-            overlay.clearCurl()
-            curlSegmentKey = null
-            return
-        }
 
         overlay.depthPercent = general.pageCurlDepthPercent
 
         val spread = isLandscapeSpread()
-        // Which holder plays which role in the curl scene. In a landscape spread the
-        // page that turns is the one on the curl side of the spread, not the pager's
-        // outgoing page: LTR turns the right page (incoming) and reveals the page
-        // after it, while the old left page stays put; R2L mirrors that.
-        val (staticPos, turningPos, revealedPos, curlOnRight) = if (spread) {
-            if (isReversed) {
-                Quad(outgoingPos + 1, outgoingPos, incomingPos, false)
-            } else {
-                Quad(outgoingPos, incomingPos, incomingPos + 1, true)
+        if (spread) {
+            // The page present in both rest spreads, on opposite halves: it migrates
+            // across, while the pages on either side sit underneath as the base.
+            val migratingPos = if (incomingPos > outgoingPos) incomingPos else outgoingPos
+            val baseLeftPos = minOf(outgoingPos, incomingPos)
+            val baseRightPos = maxOf(outgoingPos, incomingPos) + 1
+            val migrateFromRight = incomingPos > outgoingPos
+            val key = "S:$baseLeftPos:$migratingPos:$baseRightPos:$migrateFromRight:" +
+                "${overlay.width}x${overlay.height}"
+            if (key != curlSegmentKey) {
+                curlSegmentKey = key
+                val leftItem = adapter.items.getOrNull(baseLeftPos)
+                val migratingItem = adapter.items.getOrNull(migratingPos)
+                val rightItem = adapter.items.getOrNull(baseRightPos)
+                if (leftItem !is ReaderPage || migratingItem !is ReaderPage ||
+                    rightItem !is ReaderPage
+                ) {
+                    // Chapter transitions and unlaid-out holders get the stock slide.
+                    overlay.clearCurl()
+                    return
+                }
+                val left = captureHolderBitmap(leftItem) ?: run {
+                    overlay.clearCurl()
+                    return
+                }
+                val migrating = captureHolderBitmap(migratingItem) ?: run {
+                    left.recycle()
+                    overlay.clearCurl()
+                    return
+                }
+                val right = captureHolderBitmap(rightItem) ?: run {
+                    left.recycle()
+                    migrating.recycle()
+                    overlay.clearCurl()
+                    return
+                }
+                overlay.setSpreadSegment(
+                    leftBase = left,
+                    rightBase = right,
+                    migrating = migrating,
+                    migrateFromRight = migrateFromRight,
+                )
+                curlShownThisScroll = true
             }
+            overlay.progress = progress
         } else {
-            Quad(null, outgoingPos, incomingPos, !isReversed)
+            // Single page: forward peels the outgoing page off the advance edge;
+            // backward peels the returning page back on from the opposite edge,
+            // with progress inverted so the page sweeps back into place.
+            val (turningPos, revealedPos, peelFromRight, curlProgress) = if (readingForward) {
+                Quad(outgoingPos, incomingPos, !isReversed, progress)
+            } else {
+                Quad(incomingPos, outgoingPos, isReversed, 1f - progress)
+            }
+            val key = "P:$turningPos:$revealedPos:$peelFromRight:${overlay.width}x${overlay.height}"
+            if (key != curlSegmentKey) {
+                curlSegmentKey = key
+                val turningItem = adapter.items.getOrNull(turningPos)
+                val revealedItem = adapter.items.getOrNull(revealedPos)
+                if (turningItem !is ReaderPage || revealedItem !is ReaderPage) {
+                    // Chapter transitions and unlaid-out holders get the stock slide.
+                    overlay.clearCurl()
+                    return
+                }
+                val turning = captureHolderBitmap(turningItem) ?: run {
+                    overlay.clearCurl()
+                    return
+                }
+                val revealed = captureHolderBitmap(revealedItem) ?: run {
+                    turning.recycle()
+                    overlay.clearCurl()
+                    return
+                }
+                overlay.setPeelSegment(
+                    turning = turning,
+                    revealed = revealed,
+                    peelFromRight = peelFromRight,
+                )
+                curlShownThisScroll = true
+            }
+            overlay.progress = curlProgress
         }
-
-        val key = "$staticPos:$turningPos:$revealedPos:$spread:$curlOnRight"
-        if (key != curlSegmentKey) {
-            curlSegmentKey = key
-            val turningItem = adapter.items.getOrNull(turningPos)
-            val revealedItem = adapter.items.getOrNull(revealedPos)
-            val staticItem = staticPos?.let { adapter.items.getOrNull(it) }
-            if (turningItem !is ReaderPage || revealedItem !is ReaderPage ||
-                (staticPos != null && staticItem !is ReaderPage)
-            ) {
-                // Chapter transitions and unlaid-out holders get the stock slide.
-                overlay.clearCurl()
-                return
-            }
-            val turning = captureHolderBitmap(turningItem) ?: run {
-                overlay.clearCurl()
-                return
-            }
-            val revealed = captureHolderBitmap(revealedItem) ?: run {
-                turning.recycle()
-                overlay.clearCurl()
-                return
-            }
-            val static = staticItem?.let { captureHolderBitmap(it as ReaderPage) }
-            if (staticPos != null && static == null) {
-                turning.recycle()
-                revealed.recycle()
-                overlay.clearCurl()
-                return
-            }
-            overlay.setSegment(
-                turning = turning,
-                revealed = revealed,
-                static = static,
-                spread = spread,
-                curlOnRight = curlOnRight,
-                peelFromRight = !isReversed,
-            )
-            curlShownThisScroll = true
-        }
-        overlay.progress = progress
         // Gesture-synced paper rustle: volume and rate follow the finger through
         // the curl. Only while a curl segment is actually shown.
         if (general.pageTurnSoundEnabled) {
