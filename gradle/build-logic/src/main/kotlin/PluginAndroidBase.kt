@@ -41,23 +41,6 @@ class PluginAndroidBase : Plugin<Project> {
         dependencies {
             coreLibraryDesugaring(libs.android.desugar)
         }
-
-        // Fork note: this project compiles against android-36 (see
-        // app/build.gradle.kts) while several dependencies were compiled
-        // against 37, which makes AGP's AAR-metadata check fail the build
-        // even though all code compiles cleanly against 36 and upstream
-        // targets SDK 36 at runtime. The :app module already disables this
-        // guard for itself; disable it here too so every library module
-        // (e.g. :core-metadata) is covered as well. It is a compile-time
-        // check, not a runtime guarantee.
-        tasks.configureEach {
-            // AGP registers these tasks lazily, so configureEach applies
-            // as they are registered. Covers debug/release and any other
-            // build type (foss/nightly/benchmark).
-            if (name.startsWith("check") && name.endsWith("AarMetadata")) {
-                enabled = false
-            }
-        }
     }
 }
 
