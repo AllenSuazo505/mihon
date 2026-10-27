@@ -91,3 +91,9 @@
     public <init>();
     public void destroy();
 }
+
+# Mihon Gold: the page-curl turn-speed control swaps the pager's scroller by
+# reflection; keep the field name so the swap survives minification.
+-keepclassmembers class androidx.viewpager.widget.DirectionalViewPager {
+    android.widget.Scroller mScroller;
+}

@@ -24,6 +24,18 @@ class ReaderPreferences(
 
     val pageTransitions: Preference<Boolean> = preferenceStore.getBoolean("pref_enable_transitions_key", true)
 
+    // Mihon Gold: book page curl (see CurlOverlayView). Enabled by default; speed
+    // is a percent (100 = stock turn speed) and depth is a percent (50 = default roll).
+    val pageCurlEnabled: Preference<Boolean> = preferenceStore.getBoolean("pref_page_curl_enabled", true)
+
+    val pageCurlSpeedPercent: Preference<Int> = preferenceStore.getInt("pref_page_curl_speed", 100)
+
+    val pageCurlDepthPercent: Preference<Int> = preferenceStore.getInt("pref_page_curl_depth", 50)
+
+    val pageTurnSound: Preference<Boolean> = preferenceStore.getBoolean("pref_page_turn_sound", true)
+
+    val pageTurnHaptic: Preference<Boolean> = preferenceStore.getBoolean("pref_page_turn_haptic", true)
+
     val loadAheadOnlyOverWifi: Preference<Boolean> = preferenceStore.getBoolean(
         "pref_reader_load_ahead_only_over_wifi",
         true,

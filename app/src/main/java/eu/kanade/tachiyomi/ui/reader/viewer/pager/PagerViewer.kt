@@ -1,16 +1,27 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.pager
 
 import android.content.Context
+import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.ColorFilter
+import android.os.Build
+import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams
+import android.view.animation.Interpolator
 import android.widget.FrameLayout
+import android.widget.Scroller
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asAndroidColorFilter
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.children
 import androidx.core.view.isGone
@@ -101,29 +112,189 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             tracker.onPageChange(position)
         }
 
+        override fun onPageScrolled(position: Int, positionOffset: Float, positionOffsetPixels: Int) {
+            updateCurl(position, positionOffset)
+        }
+
         override fun onPageScrollStateChanged(state: Int) {
             tracker.isIdle = state == ViewPager.SCROLL_STATE_IDLE
+            if (state == ViewPager.SCROLL_STATE_IDLE) {
+                // A shown curl dropping into place gets its soft settle sound
+                // (the loop is stopped either way) and its subtle settle haptic.
+                if (curlShownThisScroll) {
+                    curlSound?.onTurnSettled(general.pageTurnSoundEnabled)
+                    if (general.pageTurnHapticEnabled) performCurlSettleHaptic()
+                    curlShownThisScroll = false
+                }
+                curlOverlay?.clearCurl()
+                curlSegmentKey = null
+                curlLastScrollX = pager.scrollX
+            }
         }
     }
+
+    /**
+     * The curl overlay drawn on top of the pager during forward turns, if the reader
+     * content has been composed yet.
+     */
+    private var curlOverlay: CurlOverlayView? = null
+
+    /** Orientation last seen by the reader content, for rotation handling. */
+    private var lastOrientation = activity.resources.configuration.orientation
+
+    /** Pager scrollX at the previous scroll callback, for scroll-direction detection. */
+    private var curlLastScrollX = 0
+
+    /** Key of the curl segment currently shown, so bitmaps are captured once per turn. */
+    private var curlSegmentKey: String? = null
+
+    /** Gesture-synced paper audio for the curl, created lazily on the first turn. */
+    private var curlSound: CurlSound? = null
+
+    /** Whether a curl segment was shown during the current scroll (for the settle sound). */
+    private var curlShownThisScroll = false
+
+    /** Whether this viewer currently shows a two-page spread (landscape, horizontal pager). */
+    private fun isLandscapeSpread(): Boolean =
+        pager.isHorizontal() &&
+            activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    /**
+     * Drives the curl overlay from the pager's scroll callbacks. Only forward turns curl:
+     * backward turns, vertical pagers, chapter transitions, and turns with page
+     * transitions disabled fall back to the pager's stock slide. Bitmaps are captured
+     * once per turn segment from the pager holders themselves.
+     */
+    private fun updateCurl(position: Int, positionOffset: Float) {
+        val overlay = curlOverlay
+        if (overlay == null) return
+        if (tracker.isIdle) {
+            // Non-animated jumps (chapter sets, adapter refreshes) report a scroll
+            // callback without ever leaving idle; never show the overlay for those,
+            // or a stale snapshot would sit on top of the reader.
+            overlay.clearCurl()
+            curlSegmentKey = null
+            curlLastScrollX = pager.scrollX
+            return
+        }
+        if (!pager.isHorizontal() || !general.usePageTransitions || !general.pageCurlEnabled ||
+            activity.isScrollingThroughPages
+        ) {
+            overlay.clearCurl()
+            curlSegmentKey = null
+            curlLastScrollX = pager.scrollX
+            return
+        }
+
+        // Scroll direction from scrollX movement: increasing scrollX means the adapter
+        // index is increasing, whatever the reading direction.
+        val increasing = pager.scrollX >= curlLastScrollX
+        curlLastScrollX = pager.scrollX
+
+        // Adapter segment being scrolled, and progress 0..1 along it.
+        val (outgoingPos, incomingPos, progress) = if (increasing) {
+            Triple(position, position + 1, positionOffset)
+        } else {
+            Triple(position + 1, position, 1f - positionOffset)
+        }
+
+        // Reading forward means the adapter index moves with the reading direction:
+        // increasing for left-to-right, decreasing for right-to-left.
+        val readingForward = if (isReversed) !increasing else increasing
+        if (!readingForward) {
+            overlay.clearCurl()
+            curlSegmentKey = null
+            return
+        }
+
+        overlay.depthPercent = general.pageCurlDepthPercent
+
+        val spread = isLandscapeSpread()
+        // Which holder plays which role in the curl scene. In a landscape spread the
+        // page that turns is the one on the curl side of the spread, not the pager's
+        // outgoing page: LTR turns the right page (incoming) and reveals the page
+        // after it, while the old left page stays put; R2L mirrors that.
+        val (staticPos, turningPos, revealedPos, curlOnRight) = if (spread) {
+            if (isReversed) {
+                Quad(outgoingPos + 1, outgoingPos, incomingPos, false)
+            } else {
+                Quad(outgoingPos, incomingPos, incomingPos + 1, true)
+            }
+        } else {
+            Quad(null, outgoingPos, incomingPos, !isReversed)
+        }
+
+        val key = "$staticPos:$turningPos:$revealedPos:$spread:$curlOnRight"
+        if (key != curlSegmentKey) {
+            curlSegmentKey = key
+            val turningItem = adapter.items.getOrNull(turningPos)
+            val revealedItem = adapter.items.getOrNull(revealedPos)
+            val staticItem = staticPos?.let { adapter.items.getOrNull(it) }
+            if (turningItem !is ReaderPage || revealedItem !is ReaderPage ||
+                (staticPos != null && staticItem !is ReaderPage)
+            ) {
+                // Chapter transitions and unlaid-out holders get the stock slide.
+                overlay.clearCurl()
+                return
+            }
+            val turning = captureHolderBitmap(turningItem) ?: run {
+                overlay.clearCurl()
+                return
+            }
+            val revealed = captureHolderBitmap(revealedItem) ?: run {
+                turning.recycle()
+                overlay.clearCurl()
+                return
+            }
+            val static = staticItem?.let { captureHolderBitmap(it as ReaderPage) }
+            if (staticPos != null && static == null) {
+                turning.recycle()
+                revealed.recycle()
+                overlay.clearCurl()
+                return
+            }
+            overlay.setSegment(
+                turning = turning,
+                revealed = revealed,
+                static = static,
+                spread = spread,
+                curlOnRight = curlOnRight,
+                peelFromRight = !isReversed,
+            )
+            curlShownThisScroll = true
+        }
+        overlay.progress = progress
+        // Gesture-synced paper rustle: volume and rate follow the finger through
+        // the curl. Only while a curl segment is actually shown.
+        if (general.pageTurnSoundEnabled) {
+            if (curlSound == null) curlSound = CurlSound(pager.context)
+            curlSound?.onCurlProgress(progress, SystemClock.uptimeMillis())
+        }
+    }
+
+    /** Renders a pager holder's current appearance into a bitmap, or null if unavailable. */
+    private fun captureHolderBitmap(page: ReaderPage): Bitmap? {
+        val holder = getPageHolder(page) ?: return null
+        if (holder.width <= 0 || holder.height <= 0) return null
+        val bitmap = Bitmap.createBitmap(holder.width, holder.height, Bitmap.Config.ARGB_8888)
+        holder.draw(Canvas(bitmap))
+        return bitmap
+    }
+
+    private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
     init {
         pager.isVisible = false // Don't layout the pager yet
         pager.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
         pager.isFocusable = false
         pager.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-        pager.offscreenPageLimit = 1
+        // Two pages each side: the curl overlay needs the revealed page's holder to
+        // already exist when a turn starts (in a landscape spread, two ahead).
+        pager.offscreenPageLimit = 2
         pager.id = R.id.reader_pager
         pager.adapter = adapter
         pager.addOnPageChangeListener(pagerListener)
-        if (pager.isHorizontal()) {
-            // Book-style page curl. The turning page must draw on top: left-to-right pagers
-            // draw in reverse order, right-to-left pagers in normal order.
-            // NOTE: do not read the open `isReversed` property here — it is
-            // declared below this init block, so it is not initialized yet.
-            // This check is exactly how `pagerItems` above derives it.
-            val reversed = this is R2LPagerViewer
-            pager.setPageTransformer(!reversed, PageCurlTransformer(reversed))
-        }
+        installCurlSpeedScroller()
         pager.tapListener = { event ->
             val viewPosition = IntArray(2)
             pager.getLocationOnScreen(viewPosition)
@@ -166,9 +337,34 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         }
     }
 
+    /**
+     * Mihon Gold: one subtle haptic pulse as a curled page lands. Kept deliberately
+     * light (a tick on modern devices, a short low-amplitude pulse otherwise) so it
+     * stays pleasant across many page turns. Independent of the sound toggle.
+     */
+    private fun performCurlSettleHaptic() {
+        val vibrator = pager.context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            ?: return
+        if (!vibrator.hasVibrator()) return
+        when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
+                vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK))
+            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O -> {
+                vibrator.vibrate(VibrationEffect.createOneShot(25, 60))
+            }
+            else -> {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(25)
+            }
+        }
+    }
+
     override fun destroy() {
         super.destroy()
         scope.cancel()
+        curlSound?.release()
+        curlSound = null
     }
 
     /**
@@ -189,8 +385,42 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             // The pager keeps every page it holds as a child.
             pager.children.filterIsInstance<PagerPageHolder>().forEach { it.pageColorFilter = pageFilter }
         }
+        // Rotation handling: the activity survives rotation, so the spread has to be
+        // engaged here. Right-to-left spreads are anchored on their right page, so
+        // entering landscape shifts one item back to show the spread's left page too.
+        // Leaving landscape keeps the spread's left page, the next unread page.
+        val orientation = LocalConfiguration.current.orientation
+        SideEffect {
+            if (orientation != lastOrientation) {
+                val wasLandscape = lastOrientation == Configuration.ORIENTATION_LANDSCAPE
+                val isLandscape = orientation == Configuration.ORIENTATION_LANDSCAPE
+                lastOrientation = orientation
+                if (pager.isVisible && pager.isHorizontal()) {
+                    if (isReversed && isLandscape && !wasLandscape) {
+                        val target = pager.currentItem - 1
+                        if (target >= 0 && adapter.items.getOrNull(target) is ReaderPage) {
+                            pager.setCurrentItem(target, false)
+                        }
+                    }
+                    adapter.notifyDataSetChanged()
+                }
+            }
+        }
         AndroidView(
-            factory = { context -> DisallowInterceptBarrier(context).apply { addView(pager) } },
+            factory = { context ->
+                DisallowInterceptBarrier(context).apply {
+                    addView(pager)
+                    // The curl overlay sits on top of the pager but never consumes
+                    // touches, so the pager's drag keeps working underneath it.
+                    curlOverlay = CurlOverlayView(context).also { overlay ->
+                        overlay.visibility = View.GONE
+                        addView(
+                            overlay,
+                            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT),
+                        )
+                    }
+                }
+            },
             modifier = modifier.mouseWheelPaging(this),
         )
     }
@@ -239,7 +469,16 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
      * Tells this viewer to move to the given [page].
      */
     override fun moveToPage(page: ReaderPage) {
-        val position = adapter.items.indexOf(page)
+        var position = adapter.items.indexOf(page)
+        // Right-to-left landscape spreads are anchored on their right page: jumping
+        // to a page must land on the spread that shows it on the right, i.e. one
+        // item back, unless that item is a chapter transition or a page split.
+        if (position != -1 && isReversed && page !is InsertPage && isLandscapeSpread()) {
+            val shifted = position - 1
+            if (shifted >= 0 && adapter.items.getOrNull(shifted) is ReaderPage) {
+                position = shifted
+            }
+        }
         if (position != -1) {
             val currentPosition = pager.currentItem
             pager.setCurrentItem(position, true)
@@ -319,4 +558,43 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
  */
 private class DisallowInterceptBarrier(context: Context) : FrameLayout(context) {
     override fun requestDisallowInterceptTouchEvent(disallowIntercept: Boolean) = Unit
+}
+
+/**
+ * Mihon Gold: turn-speed control for the page curl. DirectionalViewPager offers no
+ * scroll-duration API, so the pager's smooth-scroll duration is scaled by swapping
+ * its scroller for one that divides durations by the speed factor (100 = stock
+ * speed, 200 = twice as fast, 50 = half speed). The speed is read fresh on every
+ * scroll start, so the settings slider takes effect without reinstalling. Drags
+ * still follow the finger; only animated turns (tap zones, flings settling) scale.
+ */
+private class CurlSpeedScroller(
+    context: Context,
+    private val speedPercent: () -> Int,
+) : Scroller(context, Interpolator { t ->
+    // The stock ViewPager quintic ease-out, so the feel stays familiar.
+    val u = t - 1f
+    u * u * u * u * u + 1f
+}) {
+    override fun startScroll(startX: Int, startY: Int, dx: Int, dy: Int, duration: Int) {
+        val factor = (speedPercent() / 100f).coerceIn(0.25f, 4f)
+        super.startScroll(startX, startY, dx, dy, (duration / factor).toInt().coerceAtLeast(1))
+    }
+}
+
+/**
+ * Installs the [CurlSpeedScroller] on this viewer's pager. DirectionalViewPager
+ * keeps its scroller in a private field of the pinned 1.0.0 artifact (protected
+ * from minification by a keep rule in proguard-rules.pro); if the swap ever
+ * fails, turns simply run at stock speed and everything else still works.
+ */
+private fun PagerViewer.installCurlSpeedScroller() {
+    try {
+        val field = androidx.viewpager.widget.DirectionalViewPager::class.java
+            .getDeclaredField("mScroller")
+        field.isAccessible = true
+        field.set(pager, CurlSpeedScroller(pager.context) { general.pageCurlSpeedPercent })
+    } catch (e: Exception) {
+        logcat { "Could not install curl speed scroller, using stock speed: $e" }
+    }
 }

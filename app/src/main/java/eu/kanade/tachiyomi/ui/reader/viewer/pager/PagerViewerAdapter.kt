@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.pager
 
+import android.content.res.Configuration
 import android.view.View
 import android.view.ViewGroup
 import eu.kanade.tachiyomi.ui.reader.model.ChapterTransition
@@ -50,6 +51,21 @@ class PagerViewerAdapter(
      */
     override fun getCount(): Int {
         return items.size
+    }
+
+    /**
+     * Two-page spread in landscape: horizontal pages take half the pager width, so
+     * two sit side by side and each forward turn moves the spread by one page, like
+     * a book. Chapter transitions stay full-width. Portrait and vertical pagers are
+     * unchanged.
+     */
+    override fun getPageWidth(position: Int): Float {
+        if (!viewer.pager.isHorizontal()) return 1f
+        if (viewer.activity.resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE) {
+            return 1f
+        }
+        if (items.getOrNull(position) is ChapterTransition) return 1f
+        return 0.5f
     }
 
     /**

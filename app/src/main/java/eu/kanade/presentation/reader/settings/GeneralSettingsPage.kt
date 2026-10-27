@@ -13,6 +13,7 @@ import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
 import eu.kanade.tachiyomi.util.system.hasDisplayCutout
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.CheckboxItem
+import tachiyomi.presentation.core.components.ListGroupHeader
 import tachiyomi.presentation.core.components.SettingsChipRow
 import tachiyomi.presentation.core.components.SliderItem
 import tachiyomi.presentation.core.i18n.pluralStringResource
@@ -131,6 +132,48 @@ internal fun ColumnScope.GeneralPage(viewModel: ReaderSettingsViewModel) {
         label = stringResource(MR.strings.pref_page_transitions),
         pref = viewModel.preferences.pageTransitions,
     )
+
+    // Mihon Gold: book page curl. The toggle switches between the curl and the
+    // stock slide; speed scales animated turns, depth fattens or tightens the roll.
+    ListGroupHeader(stringResource(MR.strings.pref_page_curl))
+
+    CheckboxItem(
+        label = stringResource(MR.strings.pref_page_curl_enabled),
+        pref = viewModel.preferences.pageCurlEnabled,
+    )
+
+    val pageCurlEnabled by viewModel.preferences.pageCurlEnabled.collectAsState()
+    if (pageCurlEnabled) {
+        val speedPref = viewModel.preferences.pageCurlSpeedPercent
+        val speed by speedPref.collectAsState()
+        SliderItem(
+            label = stringResource(MR.strings.pref_page_curl_speed),
+            value = speed,
+            valueRange = 50..200,
+            valueString = "${speed / 100f}×",
+            onChange = { speedPref.set(it) },
+        )
+
+        val depthPref = viewModel.preferences.pageCurlDepthPercent
+        val depth by depthPref.collectAsState()
+        SliderItem(
+            label = stringResource(MR.strings.pref_page_curl_depth),
+            value = depth,
+            valueRange = 0..100,
+            valueString = "$depth%",
+            onChange = { depthPref.set(it) },
+        )
+
+        CheckboxItem(
+            label = stringResource(MR.strings.pref_page_turn_sound),
+            pref = viewModel.preferences.pageTurnSound,
+        )
+
+        CheckboxItem(
+            label = stringResource(MR.strings.pref_page_turn_haptic),
+            pref = viewModel.preferences.pageTurnHaptic,
+        )
+    }
 
     CheckboxItem(
         label = stringResource(MR.strings.pref_flash_page),
