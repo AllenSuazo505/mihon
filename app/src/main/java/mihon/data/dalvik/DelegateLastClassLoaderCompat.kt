@@ -15,7 +15,12 @@ fun DelegateLastClassLoaderCompat(
 ): ClassLoader {
     // ART recognizes the built-in loader and maps app images compiled for this app's class loader chain, and before
     // Android 17 a damaged one crashes every launch until the app is updated. ART doesn't recognize the backport.
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN) {
+    // Mihon Gold build note: upstream compares against
+    // Build.VERSION_CODES.CINNAMON_BUN (Android 17, API 37), but this fork
+    // compiles against android-36 (the 37 platform is not publicly
+    // downloadable here), where that constant does not exist yet. 37 is
+    // its value, so this comparison is identical.
+    return if (Build.VERSION.SDK_INT >= 37) {
         DelegateLastClassLoader(dexPath, librarySearchPath, parent)
     } else {
         DelegateLastPathClassLoader(dexPath, librarySearchPath, parent)

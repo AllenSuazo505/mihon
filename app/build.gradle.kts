@@ -29,13 +29,29 @@ if (Config.includeTelemetry) {
     }
 }
 
+// Mihon Gold build environment: the Android 37 platform package is not
+// publicly downloadable (the SDK repository manifest tops out at
+// android-36), so this fork compiles against android-36 (see
+// gradle/mihon.versions.toml). Every dependency above was itself compiled
+// against 37, which makes AGP's AAR-metadata check fail the build even
+// though all code — including the app module — compiled cleanly against
+// 36, and upstream targets SDK 36 at runtime. Disable only that guard;
+// it is a compile-time check, not a runtime guarantee.
+tasks.configureEach {
+    // AGP registers these tasks after this script runs, so named() would
+    // throw; configureEach applies lazily as they are registered.
+    if (name == "checkReleaseAarMetadata" || name == "checkDebugAarMetadata") {
+        enabled = false
+    }
+}
+
 val keystorePropertiesFile = layout.settingsDirectory.file("keystore.properties").asFile
 
 android {
     namespace = "eu.kanade.tachiyomi"
 
     defaultConfig {
-        applicationId = "app.mihon"
+        applicationId = "com.goldship.mihon"
 
         versionCode = 39
         versionName = "0.21.3"

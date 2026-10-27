@@ -115,6 +115,15 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         pager.id = R.id.reader_pager
         pager.adapter = adapter
         pager.addOnPageChangeListener(pagerListener)
+        if (pager.isHorizontal()) {
+            // Book-style page curl. The turning page must draw on top: left-to-right pagers
+            // draw in reverse order, right-to-left pagers in normal order.
+            // NOTE: do not read the open `isReversed` property here — it is
+            // declared below this init block, so it is not initialized yet.
+            // This check is exactly how `pagerItems` above derives it.
+            val reversed = this is R2LPagerViewer
+            pager.setPageTransformer(!reversed, PageCurlTransformer(reversed))
+        }
         pager.tapListener = { event ->
             val viewPosition = IntArray(2)
             pager.getLocationOnScreen(viewPosition)

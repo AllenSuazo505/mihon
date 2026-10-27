@@ -1,7 +1,10 @@
 dependencyResolutionManagement {
     @Suppress("UnstableApiUsage")
     repositories {
-        google()
+        // Mihon Gold build environment: dl.google.com fails Java PKIX
+        // validation here, so google() is deliberately absent (see root
+        // settings); Android artifacts come from the Aliyun mirror.
+        maven(url = "https://maven.aliyun.com/repository/google")
         mavenCentral()
         gradlePluginPortal()
     }
