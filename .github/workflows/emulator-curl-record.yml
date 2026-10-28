@@ -325,12 +325,21 @@ jobs:
               shell("input tap %d %d" % wait_xy)
               time.sleep(5)
           shot("step-settled.png")
-          for needle in ["Browse", "Local source", "Curl Test", "Chapter 1"]:
+          # NOTE: the seeded folder is "CurlTest" and Mihon's Local source
+          # displays the folder name as the title, so the needle must be
+          # "CurlTest" (no space). Run 40624534718 failed here searching
+          # for the spaced name: substring matching meant it never
+          # matched the displayed "curltest", and it waited the full 180s
+          # staring at the correct screen.
+          for needle in ["Browse", "Local source", "CurlTest", "Chapter 1"]:
               if not tap_text(needle, timeout=180):
                   shot("step-fail.png")
                   print("NAV FAILED at %s" % needle, flush=True)
                   sys.exit(1)
-              time.sleep(3)
+              # Post-tap settle: this emulator is slow (2-3 min per
+              # navigation), so a 3s screenshot only ever showed a
+              # transitional frame. 10s is still early but more settled.
+              time.sleep(10)
               shot("step-after-%s.png" % needle.replace(" ", "_"))
           time.sleep(2)
           shot("step-reader-open.png")
