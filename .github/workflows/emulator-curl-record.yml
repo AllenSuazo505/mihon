@@ -219,28 +219,64 @@ jobs:
                         encoding="utf-8", errors="replace") as f:
                   return f.read()
 
-          def tap_text(needle, timeout=60):
+          def bounds_center(node):
+              m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]",
+                           node.get("bounds", ""))
+              if not m:
+                  return None
+              return ((int(m.group(1)) + int(m.group(3))) // 2,
+                      (int(m.group(2)) + int(m.group(4))) // 2)
+
+          def anr_wait_button(root):
+              # Returns the center of the ANR dialog's "Wait" button, but
+              # ONLY when an "isn't responding" dialog is actually present
+              # in the same dump — so a stray "Wait" label elsewhere can
+              # never be tapped by accident. Run 40617288263 sat behind
+              # "Process system isn't responding" for the full 3 minutes;
+              # tapping "Wait" keeps the system (and the app) alive, while
+              # "Close app" would kill it.
+              anr = False
+              wait = None
+              for node in root.iter("node"):
+                  text = node.get("text", "") or ""
+                  if "isn't responding" in text or "not responding" in text:
+                      anr = True
+                  if text.strip() == "Wait":
+                      wait = node
+              if anr and wait is not None:
+                  return bounds_center(wait)
+              return None
+
+          def tap_text(needle, timeout=120):
               deadline = time.time() + timeout
+              dismissed = 0
               while time.time() < deadline:
                   try:
                       root = ET.fromstring(dump())
                   except Exception:
                       time.sleep(1)
                       continue
+                  wait_xy = anr_wait_button(root)
+                  if wait_xy is not None:
+                      dismissed += 1
+                      print("ANR dialog present; tapping Wait (dismissal %d)"
+                            % dismissed, flush=True)
+                      shell("input tap %d %d" % wait_xy)
+                      if dismissed == 1:
+                          shot("step-anr-dismissed.png")
+                      time.sleep(5)
+                      continue
                   for node in root.iter("node"):
                       text = node.get("text", "") or ""
                       desc = node.get("content-desc", "") or ""
                       if needle.lower() in text.lower() or \
                               (desc and needle.lower() in desc.lower()):
-                          m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]",
-                                       node.get("bounds", ""))
-                          if not m:
+                          xy = bounds_center(node)
+                          if xy is None:
                               continue
-                          x = (int(m.group(1)) + int(m.group(3))) // 2
-                          y = (int(m.group(2)) + int(m.group(4))) // 2
                           print("TAP %r -> (%d,%d) text=%r"
-                                % (needle, x, y, text), flush=True)
-                          shell("input tap %d %d" % (x, y))
+                                % (needle, xy[0], xy[1], text), flush=True)
+                          shell("input tap %d %d" % xy)
                           return True
                   time.sleep(1)
               print("TIMEOUT waiting for text: %s" % needle, flush=True)
@@ -264,8 +300,26 @@ jobs:
           shell("monkey -p %s -c android.intent.category.LAUNCHER 1" % PKG)
           time.sleep(6)
           shot("step-1-launch.png")
+          # System settle: the emulator's system_server can ANR right after
+          # boot (run 40617288263). Clear any ANR dialog before navigation
+          # starts; tap_text also dismisses ANRs, so a dialog that outlasts
+          # this settle loop is still handled, bounded by its timeout.
+          settle_deadline = time.time() + 180
+          while time.time() < settle_deadline:
+              try:
+                  root = ET.fromstring(dump())
+              except Exception:
+                  time.sleep(2)
+                  continue
+              wait_xy = anr_wait_button(root)
+              if wait_xy is None:
+                  break
+              print("ANR during settle; tapping Wait", flush=True)
+              shell("input tap %d %d" % wait_xy)
+              time.sleep(5)
+          shot("step-settled.png")
           for needle in ["Browse", "Local source", "Curl Test", "Chapter 1"]:
-              if not tap_text(needle, timeout=60):
+              if not tap_text(needle, timeout=180):
                   shot("step-fail.png")
                   print("NAV FAILED at %s" % needle, flush=True)
                   sys.exit(1)
@@ -313,7 +367,7 @@ jobs:
           profile: pixel_tablet
           force-avd-creation: false
           disable-animations: false
-          ram-size: 4096M
+          ram-size: 6144M  # up from 4096M: run 40617288263's system_server ANR fits memory pressure; ubuntu runners have ~16GB
           disk-size: 6144M
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
