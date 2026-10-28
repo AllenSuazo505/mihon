@@ -134,15 +134,19 @@ jobs:
           # run-as, so we can write the app's own preferences and external
           # files directly:
           #  - __APP_STATE_onboarding_complete=true skips first-run onboarding
-          #  - __APP_STATE_storage_dir points at the app's own external
-          #    files dir, which it can read without storage permissions
+          #  - __APP_STATE_storage_dir points at the app's own internal
+          #    files dir. External storage is deliberately avoided: on API 34
+          #    the app's Android/data dir does not exist until first launch
+          #    and run-as cannot create it (mkdir: Permission denied). The
+          #    internal files dir is writable by run-as with no permission
+          #    needed, and the Local source reads it via plain File IO.
           #  - Mihon's built-in Local source reads <storage>/local/<title>/
           prefs = (
               "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n"
               "<map>\n"
               '    <boolean name="__APP_STATE_onboarding_complete" value="true" />\n'
               '    <string name="__APP_STATE_storage_dir">'
-              "file:///storage/emulated/0/Android/data/com.goldship.mihon.dev/files"
+              "file:///data/data/com.goldship.mihon.dev/files"
               "</string>\n"
               "</map>\n"
           )
@@ -153,19 +157,19 @@ jobs:
           run(["adb", "push", "mihon_prefs.xml", "/data/local/tmp/mihon_prefs.xml"])
           run(["adb", "shell", "run-as", PKG, "mkdir", "-p",
                "/data/data/%s/shared_prefs" % PKG,
-               "/storage/emulated/0/Android/data/%s/files/local/CurlTest" % PKG])
+               "/data/data/%s/files/local/CurlTest" % PKG])
           run(["adb", "shell", "run-as", PKG, "cp",
                "/data/local/tmp/mihon_prefs.xml",
                "/data/data/%s/shared_prefs/%s_preferences.xml" % (PKG, PKG)])
           run(["adb", "shell", "run-as", PKG, "cp",
                "/data/local/tmp/curltest.cbz",
-               "/storage/emulated/0/Android/data/%s/files/local/CurlTest/Chapter 1.cbz" % PKG])
+               "/data/data/%s/files/local/CurlTest/Chapter 1.cbz" % PKG])
           run(["adb", "shell", "run-as", PKG, "cp",
                "/data/local/tmp/cover.jpg",
-               "/storage/emulated/0/Android/data/%s/files/local/CurlTest/cover.jpg" % PKG])
+               "/data/data/%s/files/local/CurlTest/cover.jpg" % PKG])
           print("--- seeded files ---")
           run(["adb", "shell", "run-as", PKG, "ls", "-R",
-               "/storage/emulated/0/Android/data/%s/files" % PKG])
+               "/data/data/%s/files" % PKG])
           print("seed done")
           PYEOF
           cat > emulator-scripts/drive.py <<'PYEOF'
@@ -292,9 +296,9 @@ jobs:
             adb shell settings put global transition_animation_scale 1
             adb shell settings put global animator_duration_scale 1
             adb shell settings put system accelerometer_rotation 1
-            python3 emulator-scripts/gen_pages.py
-            python3 emulator-scripts/seed.py
-            python3 emulator-scripts/drive.py
+            python3 -u emulator-scripts/gen_pages.py
+            python3 -u emulator-scripts/seed.py
+            python3 -u emulator-scripts/drive.py
             ls -la curl.mp4 step-*.png
 
       - name: Upload curl recording
