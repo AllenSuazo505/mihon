@@ -128,7 +128,28 @@ jobs:
           if not apks:
               raise SystemExit("no universal/x86_64 debug APK found")
           print("Installing", apks[0])
-          run(["adb", "install", "-r", apks[0]])
+          # The emulator reports boot_completed before system services are
+          # fully up; a streamed install started too early dies with
+          # "Failure calling service package: Broken pipe (32)" (run
+          # 40615582246). Wait until the package manager answers, then
+          # retry the install a few times before giving up.
+          import time as _time
+          for _ in range(24):
+              r = subprocess.run(["adb", "shell", "pm", "path", "android"],
+                                 capture_output=True, text=True)
+              if r.returncode == 0 and "package:" in r.stdout:
+                  break
+              _time.sleep(5)
+          else:
+              print("WARNING: package manager never answered; trying install anyway")
+          for attempt in range(3):
+              r = run(["adb", "install", "-r", apks[0]], check=False)
+              if r.returncode == 0:
+                  break
+              print("install attempt %d failed; retrying in 20s" % (attempt + 1))
+              _time.sleep(20)
+          else:
+              raise SystemExit("FAILED: adb install after 3 attempts")
 
           # Seed prefs + content BEFORE first launch. Debug builds allow
           # run-as, so we can write the app's own preferences and external
