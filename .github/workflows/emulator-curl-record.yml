@@ -161,12 +161,16 @@ jobs:
           run(["adb", "shell", "run-as", PKG, "cp",
                "/data/local/tmp/mihon_prefs.xml",
                "/data/data/%s/shared_prefs/%s_preferences.xml" % (PKG, PKG)])
+          # NOTE: adb joins `shell` argv with spaces and the device shell
+          # word-splits the result, so destinations containing spaces
+          # (e.g. "Chapter 1.cbz") MUST be single-quoted here, or cp sees
+          # the split pieces as extra operands ("cp: '1.cbz' not directory").
           run(["adb", "shell", "run-as", PKG, "cp",
                "/data/local/tmp/curltest.cbz",
-               "/data/data/%s/files/local/CurlTest/Chapter 1.cbz" % PKG])
+               "'/data/data/%s/files/local/CurlTest/Chapter 1.cbz'" % PKG])
           run(["adb", "shell", "run-as", PKG, "cp",
                "/data/local/tmp/cover.jpg",
-               "/data/data/%s/files/local/CurlTest/cover.jpg" % PKG])
+               "'/data/data/%s/files/local/CurlTest/cover.jpg'" % PKG])
           print("--- seeded files ---")
           run(["adb", "shell", "run-as", PKG, "ls", "-R",
                "/data/data/%s/files" % PKG])
