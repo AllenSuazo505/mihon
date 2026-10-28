@@ -63,6 +63,13 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug --console=plain
 
+      # Free the Gradle daemon's memory before the emulator starts: the
+      # daemon holds gigabytes while the software-GPU emulator is already
+      # the hungriest process on the runner (run 40620267127 ANR'd the
+      # launcher and System UI for ~8 minutes straight).
+      - name: Stop Gradle daemon
+        run: ./gradlew --stop || true
+
       - name: Write emulator driver scripts
         run: |
           python3 -m pip install --break-system-packages --quiet pillow
@@ -364,15 +371,15 @@ jobs:
           api-level: 34
           arch: x86_64
           target: google_apis
-          profile: pixel_tablet
+          profile: pixel_7  # was pixel_tablet: its 2560x1600 screen costs ~4.1M software-rendered pixels/frame and the launcher/System UI ANR'd persistently on run 40620267127; 1080x2400 is ~37% fewer pixels and the curl is still fully visible, including landscape spread
           force-avd-creation: false
           disable-animations: false
           ram-size: 6144M  # up from 4096M: run 40617288263's system_server ANR fits memory pressure; ubuntu runners have ~16GB
           disk-size: 6144M
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
-            adb shell settings put global window_animation_scale 1
-            adb shell settings put global transition_animation_scale 1
+            adb shell settings put global window_animation_scale 0
+            adb shell settings put global transition_animation_scale 0
             adb shell settings put global animator_duration_scale 1
             adb shell settings put system accelerometer_rotation 1
             python3 -u emulator-scripts/gen_pages.py
