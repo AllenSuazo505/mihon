@@ -255,7 +255,16 @@ jobs:
               return None
 
           def tap_text(needle, timeout=120):
-              deadline = time.time() + timeout
+              # Run 40627612741 failed here: 4 ANR dismissals during the
+              # "Local source" wait ate the whole 180s budget, and the
+              # timeout fired while dialogs were still coming. An ANR
+              # storm is the emulator recovering, not the needle being
+              # absent, so each dismissal extends the deadline instead
+              # of consuming it (hard cap 600s per call so a truly
+              # missing needle still fails instead of hanging forever).
+              start = time.time()
+              deadline = start + timeout
+              hard_cap = start + 600
               dismissed = 0
               while time.time() < deadline:
                   try:
@@ -271,6 +280,7 @@ jobs:
                       shell("input tap %d %d" % wait_xy)
                       if dismissed == 1:
                           shot("step-anr-dismissed.png")
+                      deadline = min(hard_cap, deadline + 120)
                       time.sleep(5)
                       continue
                   for node in root.iter("node"):
@@ -332,7 +342,7 @@ jobs:
           # matched the displayed "curltest", and it waited the full 180s
           # staring at the correct screen.
           for needle in ["Browse", "Local source", "CurlTest", "Chapter 1"]:
-              if not tap_text(needle, timeout=180):
+              if not tap_text(needle, timeout=300):
                   shot("step-fail.png")
                   print("NAV FAILED at %s" % needle, flush=True)
                   sys.exit(1)
